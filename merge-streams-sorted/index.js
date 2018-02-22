@@ -84,7 +84,6 @@ const handleConsumer = data => {
     }
     if (atLeastOne) {
       buffer = R.filter(x => x != null, buffer);
-      oneMore = true;
     }
   }
   if (buffer.length > 50) {
@@ -123,7 +122,7 @@ const handleFinal = data => {
 }
 
 const VALS = [
-  'A', 'B', 'C', 'D', 'E', 'F'
+  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'
 ];
 
 const startShift = (ms) => {
@@ -136,7 +135,7 @@ const startShift = (ms) => {
 VALS.forEach(commander => {
   const command = 'S' + commander;
   console.log('hook up', commander, command);
-  emitter.on(command, data => sleepRand(1, 250, data).then(simulateCommander(commander)));
+  emitter.on(command, data => sleepRand(1, 1000, data).then(simulateCommander(commander)));
   emitter.on(commander, handleConsumer);
 });
 
