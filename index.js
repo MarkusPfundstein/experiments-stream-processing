@@ -3,31 +3,28 @@ const { EventEmitter } = require('events');
 
 const emitter = new EventEmitter();
 
-let emitATime = 0;
-let emitBTime = 0;
-
 const CLOCKS = {
-  S: 0,
-  A: 0,
-  B: 0,
 };
 
 const counters = {
-  a: 0,
-  b: 0,
-  sa: 0,
-  sb: 0,
 }
 
 const sleepRand = R.curry((min, max, dataTap) => new Promise(resolve =>
   setTimeout(() => resolve(dataTap), Math.floor(Math.random() * (max - min + 1) + min))));
 
 const emit = (node, key, wrap = {}) => {
+  if (!(node in CLOCKS)) {
+    CLOCKS[node] = 0;
+  }
   ++CLOCKS[node];
 
   const k = key.toLowerCase();
+  if (!(k in counters)) {
+    counters[k] = 0;
+  }
   ++counters[k];
 
+  //console.log(`real emit: ${k}, ${counters[k]}, ${wrap.lc}`);
   emitter.emit(key, {
     type: `${k}_${counters[k]}`,
     ts: Date.now(),
@@ -37,10 +34,7 @@ const emit = (node, key, wrap = {}) => {
 }
 
 const logRec = (data, node) => new Promise((resolve) => {
-  const auxInfo = {
-    now: Date.now(),
-  };
-  //console.log(`${node} got: `, data.type);
+  //console.log(`${node} got: `, data.type, data.lc);
   return resolve(data);
 });
 
@@ -50,62 +44,115 @@ const simulateCommander = (node) => (data) =>
     .then(() => emit(node, node, data));
 
 let buffer = [];
-let lastLc = 0;
-const handleConsumer = data => {
-  //console.log(data.type, 'lastLc: ', lastLc, 'lc: ', data.wrap.lc);
+let lastLcEmitted = 0;
 
+const emit2 = (key, type, wLc, pType, lc) => {
+  setTimeout(() => {
+    emitter.emit(key, {
+      type,
+      pType,
+      wLc,
+      lc,
+    });
+  }, 10);
+};
+
+const handleConsumer = data => {
+    
   const lc = data.wrap.lc;
-  // a packet missing. buffer it
-  if (lc - lastLc > 1) {
+  // we can emit immediately
+  if (lc - lastLcEmitted === 1) {
+    emit2('FINAL', data.wrap.type, data.wrap.lc, data.type, data.lc);
+    lastLcEmitted = lc;
+  }
+  // one or more packets missing. buffer current one
+  else if (lc - lastLcEmitted > 1) {
     buffer.push(data);
-    lastLc = lc;
-  // packet that was missing. emit
-  }  else if (lc < lastLc) {
-    const oldData = buffer.pop();
-    emit('C', 'C', data);
-    emit('C', 'C', oldData);
-  } else {
-    lastLc = lc;
-    emit('C', 'C', data);
+  }  
+  
+  let oneMore = true;
+  while (oneMore) {
+    oneMore = false;
+    let atLeastOne = false;
+    for (let i = 0; i < buffer.length; ++i) {
+      if (buffer[i].wrap.lc - lastLcEmitted === 1) {
+        emit2('FINAL', buffer[i].wrap.type, buffer[i].wrap.lc, buffer[i].type, buffer[i].lc);
+        lastLcEmitted = buffer[i].wrap.lc;
+        buffer[i] = null;
+        atLeastOne = true;
+      }
+    }
+    if (atLeastOne) {
+      buffer = R.filter(x => x != null, buffer);
+      oneMore = true;
+    }
+  }
+  if (buffer.length > 50) {
+    console.log('---- buffer overflow');
   }
 }
 
-// A now delay
-emitter.on('SA', data => sleepRand(0, 0, data).then(simulateCommander('A')));
-
-// B random slight delay
-emitter.on('SB', data => sleepRand(0, 50, data).then(simulateCommander('B')));
-
-// slight network delay then handle consumer
-emitter.on('A', data => sleepRand(0, 100, data).then(handleConsumer));
-emitter.on('B', data => sleepRand(0, 100, data).then(handleConsumer));
 
 let LAST_SEQ=0;
 
 let CHECK_MAP = {}
 
-let errors = 0;
+let orderErrors = 0;
+let missErrors = 0;
 let nPackets = 0;
 
 const handleFinal = data => {
-  const [type, seq] = data.wrap && data.wrap.type ? data.wrap.type.split('_') : ['unknown', 0];
+  const [ type, seq] = data.type.split('_');
+  const { pType, lc, wLc } = data;
 
   if (!CHECK_MAP[seq]) {
     CHECK_MAP[seq] = {};
   }
-  if ((type === 'a' && 'b' in CHECK_MAP[seq]) || (seq - LAST_SEQ > 1)) {
-    ++errors;
+  if (type === 'sb' && !('sa' in CHECK_MAP[seq])) {
+    ++orderErrors;
     console.error("WHOOOOOOOOOOOOOOOOOOOOOOP");
   }
+  if (seq - LAST_SEQ > 1) {
+    ++missErrors;
+    console.error("MISS MISS MISS MISS MISS");
+  }
   CHECK_MAP[seq][type] = true;
-  LAST_SEQ = seq;
+  LAST_SEQ = Math.max(seq, LAST_SEQ);
   ++nPackets;
-  console.log(type, seq, `e/n: ${errors}/${nPackets}`);
+  console.log(pType.split('_')[0].toUpperCase(), type, seq, `- lc: ${lc} wLc: ${wLc} \t\t\torderErrors/missErrors/n: ${orderErrors}/${missErrors}/${nPackets}`);
 }
 
-emitter.on('C', handleFinal);
+const VALS = [
+  'A', 'B', 'C', 'D', 'E', 'F'
+];
 
-setInterval(() => {
-  emit('S', 'SA');
-  emit('S', 'SB');
-}, 50);
+const startShift = (ms) => {
+  setTimeout(() => {
+    VALS.forEach(val => emit('S', 'S' + val));
+    startShift(((min, max) => Math.floor(Math.random() * (max - min + 1) + min))(50, 250));
+  }, ms);
+};
+
+VALS.forEach(commander => {
+  const command = 'S' + commander;
+  console.log('hook up', commander, command);
+  emitter.on(command, data => sleepRand(1, 250, data).then(simulateCommander(commander)));
+  emitter.on(commander, handleConsumer);
+});
+
+emitter.on('FINAL', handleFinal);
+
+/*
+// A now delay
+emitter.on('SA', data => sleepRand(1, 20, data).then(simulateCommander('A')));
+
+// B random slight delay
+emitter.on('SB', data => sleepRand(1, 250, data).then(simulateCommander('B')));
+
+// slight network delay then handle consumer
+emitter.on('A', data => handleConsumer(data));
+emitter.on('B', data => handleConsumer(data));
+*/
+
+
+startShift(0);
